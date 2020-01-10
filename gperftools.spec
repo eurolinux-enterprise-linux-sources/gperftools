@@ -4,7 +4,7 @@
 
 Name:		gperftools
 Version:	2.4
-Release:	7%{?dist}
+Release:	8%{?dist}
 License:	BSD
 Group:		Development/Tools
 Summary:	Very fast malloc and performance analysis tools
@@ -13,6 +13,8 @@ Source0:	https://googledrive.com/host/0B6NtGsLhIcf7MWxMMF9JdTN3UVk/%{name}-%{ver
 
 # For bz 1232702 - gperftools: tcmalloc debug version uses hard-coded path /tmp/google.alloc
 Patch1: gperf-allow-customizing-trace-filename.patch
+# For bz#1339710 - initalization of 'recursive' tls variable in libunwind stack capturer occasionally triggers deadlock in ceph
+Patch2: gp-Use-initial-exec-tls-for-libunwind-s-recursion-flag.patch
 
 ExcludeArch:	s390 s390x
 %ifnarch ppc %{power64}
@@ -61,6 +63,7 @@ Pprof is a heap and CPU profiler tool, part of the gperftools suite.
 %prep
 %setup -q
 %patch1 -p1
+%patch2 -p1
 
 # Fix end-of-line encoding
 sed -i 's/\r//' README_windows.txt
@@ -113,6 +116,11 @@ rm -rf %{buildroot}%{_pkgdocdir}/INSTALL
 %{_libdir}/*.so.*
 
 %changelog
+* Wed Jun 22 2016 Miroslav Rezanina <mrezanin@redhat.com> - 2.4-8.el7
+- gp-Use-initial-exec-tls-for-libunwind-s-recursion-flag.patch [bz#1339710]
+- Resolves: bz#1339710
+  (initalization of 'recursive' tls variable in libunwind stack capturer occasionally triggers deadlock in ceph)
+
 * Wed Aug 26 2015 Miroslav Rezanina <mrezanin@redhat.com> 2.4-7
 - Rebuild to fix NVR [bz#1269032]
 - Resolves: bz#1269032

@@ -1,0 +1,94 @@
+From 6737c9f59a523a4813f6e825bfbf3db2dcb00432 Mon Sep 17 00:00:00 2001
+From: Paolo Bonzini <pbonzini@redhat.com>
+Date: Wed, 15 Jun 2016 22:19:56 +0200
+Subject: [PATCH] Use initial-exec tls for libunwind's recursion flag
+
+RH-Author: Paolo Bonzini <pbonzini@redhat.com>
+Message-id: <1466029196-19454-1-git-send-email-pbonzini@redhat.com>
+Patchwork-id: 70630
+O-Subject: [RHEL7.3 PATCH gperftools] Use initial-exec tls for libunwind's recursion flag
+Bugzilla: 1339710
+RH-Acked-by: Miroslav Rezanina <mrezanin@redhat.com>
+RH-Acked-by: Bandan Das <bsd@redhat.com>
+RH-Acked-by: Laszlo Ersek <lersek@redhat.com>
+
+From: Aliaksey Kandratsenka <alkondratenko@gmail.com>
+
+Bugzilla: 1339710
+
+Brew build: 11181349
+
+If we don't do it, then reading variable calls to __tls_get_addr, which
+uses malloc on first call. initial-exec makes dynamic linker reserve tls
+offset for recusion flag early and thus avoid unsafe calls to malloc.
+
+This fixes issue #786.
+
+Signed-off-by: Paolo Bonzini <pbonzini@redhat.com>
+(cherry picked from commit 7852eeb75b9375cf52a7da01be044da6e915dd08)
+Signed-off-by: Miroslav Rezanina <mrezanin@redhat.com>
+---
+ src/base/basictypes.h          | 6 ++++++
+ src/stacktrace_libunwind-inl.h | 4 +++-
+ src/thread_cache.h             | 6 ------
+ 3 files changed, 9 insertions(+), 7 deletions(-)
+
+diff --git a/src/base/basictypes.h b/src/base/basictypes.h
+index 4779611..d7c0f7a 100644
+--- a/src/base/basictypes.h
++++ b/src/base/basictypes.h
+@@ -192,6 +192,12 @@ struct CompileAssert {
+ # define ATTRIBUTE_UNUSED
+ #endif
+ 
++#if defined(HAVE___ATTRIBUTE__) && defined(HAVE_TLS)
++#define ATTR_INITIAL_EXEC __attribute__ ((tls_model ("initial-exec")))
++#else
++#define ATTR_INITIAL_EXEC
++#endif
++
+ #define COMPILE_ASSERT(expr, msg)                               \
+   typedef CompileAssert<(bool(expr))> msg[bool(expr) ? 1 : -1] ATTRIBUTE_UNUSED
+ 
+diff --git a/src/stacktrace_libunwind-inl.h b/src/stacktrace_libunwind-inl.h
+index 8a4a731..6f361ec 100644
+--- a/src/stacktrace_libunwind-inl.h
++++ b/src/stacktrace_libunwind-inl.h
+@@ -47,6 +47,8 @@ extern "C" {
+ #include <libunwind.h>
+ }
+ #include "gperftools/stacktrace.h"
++
++#include "base/basictypes.h"
+ #include "base/logging.h"
+ 
+ // Sometimes, we can try to get a stack trace from within a stack
+@@ -56,7 +58,7 @@ extern "C" {
+ // recursive request, we'd end up with infinite recursion or deadlock.
+ // Luckily, it's safe to ignore those subsequent traces.  In such
+ // cases, we return 0 to indicate the situation.
+-static __thread int recursive;
++static __thread int recursive ATTR_INITIAL_EXEC;
+ 
+ #if defined(TCMALLOC_ENABLE_UNWIND_FROM_UCONTEXT) && (defined(__i386__) || defined(__x86_64__)) && defined(__GNU_LIBRARY__)
+ #define BASE_STACKTRACE_UNW_CONTEXT_IS_UCONTEXT 1
+diff --git a/src/thread_cache.h b/src/thread_cache.h
+index 5edcdfb..27109af 100644
+--- a/src/thread_cache.h
++++ b/src/thread_cache.h
+@@ -252,12 +252,6 @@ class ThreadCache {
+   // Since we don't really use dlopen in google code -- and using dlopen
+   // on a malloc replacement is asking for trouble in any case -- that's
+   // a good tradeoff for us.
+-#ifdef HAVE___ATTRIBUTE__
+-#define ATTR_INITIAL_EXEC __attribute__ ((tls_model ("initial-exec")))
+-#else
+-#define ATTR_INITIAL_EXEC
+-#endif
+-
+ #ifdef HAVE_TLS
+   struct ThreadLocalData {
+     ThreadCache* heap;
+-- 
+1.8.3.1
+
