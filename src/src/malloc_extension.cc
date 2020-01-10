@@ -193,9 +193,27 @@ void MallocExtension::GetFreeListSizes(
   v->clear();
 }
 
+size_t MallocExtension::GetThreadCacheSize() {
+  return 0;
+}
+
+void MallocExtension::MarkThreadTemporarilyIdle() {
+  // Default implementation does nothing
+}
+
 // The current malloc extension object.
 
 static MallocExtension* current_instance;
+
+#if (!defined(_WIN32) && !defined(__MINGW32__))
+// Provide a weak hook for __lsan_ignore_object, so that
+// if leak sanitizer is enabled, we can ignore the current_instance
+// heap allocation.
+extern "C" void __attribute__((weak)) __lsan_ignore_object(const void *);
+#else
+// Weak hooks aren't supported on windows, but neither is leak sanitizer.
+void (*__lsan_ignore_object)(const void *) = nullptr;
+#endif
 
 static void InitModule() {
   if (current_instance != NULL) {
@@ -205,6 +223,9 @@ static void InitModule() {
 #ifndef NO_HEAP_CHECK
   HeapLeakChecker::IgnoreObject(current_instance);
 #endif
+  if (__lsan_ignore_object) {
+    __lsan_ignore_object(current_instance);
+  }
 }
 
 REGISTER_MODULE_INITIALIZER(malloc_extension_init, InitModule())
@@ -369,6 +390,8 @@ C_SHIM(ReleaseFreeMemory, void, (void), ());
 C_SHIM(ReleaseToSystem, void, (size_t num_bytes), (num_bytes));
 C_SHIM(GetEstimatedAllocatedSize, size_t, (size_t size), (size));
 C_SHIM(GetAllocatedSize, size_t, (const void* p), (p));
+C_SHIM(GetThreadCacheSize, size_t, (void), ());
+C_SHIM(MarkThreadTemporarilyIdle, void, (void), ());
 
 // Can't use the shim here because of the need to translate the enums.
 extern "C"

@@ -3,23 +3,15 @@
 %{!?_pkgdocdir: %global _pkgdocdir %{_docdir}/%{name}-%{version}}
 
 Name:		gperftools
-Version:	2.4
-Release:	8%{?dist}
+Version:	2.6.1
+Release:	1%{?dist}
 License:	BSD
 Group:		Development/Tools
 Summary:	Very fast malloc and performance analysis tools
 URL:		http://code.google.com/p/gperftools/
 Source0:	https://googledrive.com/host/0B6NtGsLhIcf7MWxMMF9JdTN3UVk/%{name}-%{version}.tar.gz
 
-# For bz 1232702 - gperftools: tcmalloc debug version uses hard-coded path /tmp/google.alloc
-Patch1: gperf-allow-customizing-trace-filename.patch
-# For bz#1339710 - initalization of 'recursive' tls variable in libunwind stack capturer occasionally triggers deadlock in ceph
-Patch2: gp-Use-initial-exec-tls-for-libunwind-s-recursion-flag.patch
 
-ExcludeArch:	s390 s390x
-%ifnarch ppc %{power64}
-BuildRequires:	libunwind-devel
-%endif
 Requires:	gperftools-devel = %{version}-%{release}
 Requires:	pprof = %{version}-%{release}
 
@@ -62,8 +54,7 @@ Pprof is a heap and CPU profiler tool, part of the gperftools suite.
 
 %prep
 %setup -q
-%patch1 -p1
-%patch2 -p1
+
 
 # Fix end-of-line encoding
 sed -i 's/\r//' README_windows.txt
@@ -74,7 +65,7 @@ chmod -x src/*.h src/*.cc
 %build
 CFLAGS=`echo $RPM_OPT_FLAGS -fno-strict-aliasing -Wno-unused-local-typedefs -DTCMALLOC_LARGE_PAGES | sed -e 's|-fexceptions||g'`
 CXXFLAGS=`echo $RPM_OPT_FLAGS -fno-strict-aliasing -Wno-unused-local-typedefs -DTCMALLOC_LARGE_PAGES | sed -e 's|-fexceptions||g'`
-%configure --disable-static 
+%configure --disable-static --disable-libunwind
 
 # Bad rpath!
 sed -i 's|^hardcode_libdir_flag_spec=.*|hardcode_libdir_flag_spec=""|g' libtool
@@ -116,6 +107,14 @@ rm -rf %{buildroot}%{_pkgdocdir}/INSTALL
 %{_libdir}/*.so.*
 
 %changelog
+* Thu Oct 12 2017 Miroslav Rezanina <mrezanin@redhat.com> - 2.4-8.el7
+- Rebase to 2.6.1 [bz#1431240]
+- Removed libunwind usage [bz#1467203]
+- Resolves: bz#1431240 
+  (gperftools fails to build on s390x, lacks s390x support)
+- Resolves: bz#1467203
+  (Please, remove libunwind from the gperftools-libs (and 389-ds-base) requirements)
+
 * Wed Jun 22 2016 Miroslav Rezanina <mrezanin@redhat.com> - 2.4-8.el7
 - gp-Use-initial-exec-tls-for-libunwind-s-recursion-flag.patch [bz#1339710]
 - Resolves: bz#1339710

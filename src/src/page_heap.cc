@@ -35,6 +35,7 @@
 #ifdef HAVE_INTTYPES_H
 #include <inttypes.h>                   // for PRIuPTR
 #endif
+#include <errno.h>                      // for ENOMEM, errno
 #include <gperftools/malloc_extension.h>      // for MallocRange, etc
 #include "base/basictypes.h"
 #include "base/commandlineflags.h"
@@ -63,12 +64,11 @@ namespace tcmalloc {
 
 PageHeap::PageHeap()
     : pagemap_(MetaDataAlloc),
-      pagemap_cache_(0),
       scavenge_counter_(0),
       // Start scavenging at kMaxPages list
       release_index_(kMaxPages),
       aggressive_decommit_(false) {
-  COMPILE_ASSERT(kNumClasses <= (1 << PageMapCache::kValuebits), valuebits);
+  COMPILE_ASSERT(kClassSizesMax <= (1 << PageMapCache::kValuebits), valuebits);
   DLL_Init(&large_.normal);
   DLL_Init(&large_.returned);
   for (int i = 0; i < kMaxPages; i++) {
@@ -156,6 +156,12 @@ Span* PageHeap::New(Length n) {
   if (!GrowHeap(n)) {
     ASSERT(stats_.unmapped_bytes+ stats_.committed_bytes==stats_.system_bytes);
     ASSERT(Check());
+    // underlying SysAllocator likely set ENOMEM but we can get here
+    // due to EnsureLimit so we set it here too.
+    //
+    // Setting errno to ENOMEM here allows us to avoid dealing with it
+    // in fast-path.
+    errno = ENOMEM;
     return NULL;
   }
   return SearchFreeAndLargeLists(n);
@@ -313,11 +319,29 @@ void PageHeap::Delete(Span* span) {
   ASSERT(Check());
 }
 
-bool PageHeap::MayMergeSpans(Span *span, Span *other) {
-  if (aggressive_decommit_) {
-    return other->location != Span::IN_USE;
+// Given span we're about to free and other span (still on free list),
+// checks if 'other' span is mergable with 'span'. If it is, removes
+// other span from free list, performs aggressive decommit if
+// necessary and returns 'other' span. Otherwise 'other' span cannot
+// be merged and is left untouched. In that case NULL is returned.
+Span* PageHeap::CheckAndHandlePreMerge(Span* span, Span* other) {
+  if (other == NULL) {
+    return other;
   }
-  return span->location == other->location;
+  // if we're in aggressive decommit mode and span is decommitted,
+  // then we try to decommit adjacent span.
+  if (aggressive_decommit_ && other->location == Span::ON_NORMAL_FREELIST
+      && span->location == Span::ON_RETURNED_FREELIST) {
+    bool worked = DecommitSpan(other);
+    if (!worked) {
+      return NULL;
+    }
+  } else if (other->location != span->location) {
+    return NULL;
+  }
+
+  RemoveFromFreeList(other);
+  return other;
 }
 
 void PageHeap::MergeIntoFreeList(Span* span) {
@@ -333,15 +357,6 @@ void PageHeap::MergeIntoFreeList(Span* span) {
   //
   // The following applies if aggressive_decommit_ is enabled:
   //
-  // Note that the adjacent spans we merge into "span" may come out of a
-  // "normal" (committed) list, and cleanly merge with our IN_USE span, which
-  // is implicitly committed.  If the adjacents spans are on the "returned"
-  // (decommitted) list, then we must get both spans into the same state before
-  // or after we coalesce them.  The current code always decomits. This is
-  // achieved by blindly decommitting the entire coalesced region, which  may
-  // include any combination of committed and decommitted spans, at the end of
-  // the method.
-
   // TODO(jar): "Always decommit" causes some extra calls to commit when we are
   // called in GrowHeap() during an allocation :-/.  We need to eval the cost of
   // that oscillation, and possibly do something to reduce it.
@@ -349,54 +364,37 @@ void PageHeap::MergeIntoFreeList(Span* span) {
   // TODO(jar): We need a better strategy for deciding to commit, or decommit,
   // based on memory usage and free heap sizes.
 
-  uint64_t temp_committed = 0;
-
   const PageID p = span->start;
   const Length n = span->length;
-  Span* prev = GetDescriptor(p-1);
-  if (prev != NULL && MayMergeSpans(span, prev)) {
+
+  if (aggressive_decommit_ && span->location == Span::ON_NORMAL_FREELIST) {
+    if (DecommitSpan(span)) {
+      span->location = Span::ON_RETURNED_FREELIST;
+    }
+  }
+
+  Span* prev = CheckAndHandlePreMerge(span, GetDescriptor(p-1));
+  if (prev != NULL) {
     // Merge preceding span into this span
     ASSERT(prev->start + prev->length == p);
     const Length len = prev->length;
-    if (aggressive_decommit_ && prev->location == Span::ON_RETURNED_FREELIST) {
-      // We're about to put the merge span into the returned freelist and call
-      // DecommitSpan() on it, which will mark the entire span including this
-      // one as released and decrease stats_.committed_bytes by the size of the
-      // merged span.  To make the math work out we temporarily increase the
-      // stats_.committed_bytes amount.
-      temp_committed = prev->length << kPageShift;
-    }
-    RemoveFromFreeList(prev);
     DeleteSpan(prev);
     span->start -= len;
     span->length += len;
     pagemap_.set(span->start, span);
     Event(span, 'L', len);
   }
-  Span* next = GetDescriptor(p+n);
-  if (next != NULL && MayMergeSpans(span, next)) {
+  Span* next = CheckAndHandlePreMerge(span, GetDescriptor(p+n));
+  if (next != NULL) {
     // Merge next span into this span
     ASSERT(next->start == p+n);
     const Length len = next->length;
-    if (aggressive_decommit_ && next->location == Span::ON_RETURNED_FREELIST) {
-      // See the comment below 'if (prev->location ...' for explanation.
-      temp_committed += next->length << kPageShift;
-    }
-    RemoveFromFreeList(next);
     DeleteSpan(next);
     span->length += len;
     pagemap_.set(span->start + span->length - 1, span);
     Event(span, 'R', len);
   }
 
-  if (aggressive_decommit_) {
-    if (DecommitSpan(span)) {
-      span->location = Span::ON_RETURNED_FREELIST;
-      stats_.committed_bytes += temp_committed;
-    } else {
-      ASSERT(temp_committed == 0);
-    }
-  }
   PrependToFreeList(span);
 }
 
@@ -515,7 +513,7 @@ bool PageHeap::EnsureLimit(Length n, bool withRelease)
   return takenPages + n <= limit;
 }
 
-void PageHeap::RegisterSizeClass(Span* span, size_t sc) {
+void PageHeap::RegisterSizeClass(Span* span, uint32 sc) {
   // Associate span object with all interior pages as well
   ASSERT(span->location == Span::IN_USE);
   ASSERT(GetDescriptor(span->start) == span);

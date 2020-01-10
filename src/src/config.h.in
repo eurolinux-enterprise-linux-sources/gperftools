@@ -5,6 +5,12 @@
 #define GPERFTOOLS_CONFIG_H_
 
 
+/* Build runtime detection for sized delete */
+#undef ENABLE_DYNAMIC_SIZED_DELETE
+
+/* Build sized deletion operators */
+#undef ENABLE_SIZED_DELETE
+
 /* Define to 1 if compiler supports __builtin_expect */
 #undef HAVE_BUILTIN_EXPECT
 
@@ -98,9 +104,6 @@
 /* Define to 1 if you have the <malloc.h> header file. */
 #undef HAVE_MALLOC_H
 
-/* Define to 1 if you have the <malloc/malloc.h> header file. */
-#undef HAVE_MALLOC_MALLOC_H
-
 /* Define to 1 if you have the <memory.h> header file. */
 #undef HAVE_MEMORY_H
 
@@ -150,9 +153,6 @@
 /* Define to 1 if you have the <sys/cdefs.h> header file. */
 #undef HAVE_SYS_CDEFS_H
 
-/* Define to 1 if you have the <sys/malloc.h> header file. */
-#undef HAVE_SYS_MALLOC_H
-
 /* Define to 1 if you have the <sys/param.h> header file. */
 #undef HAVE_SYS_PARAM_H
 
@@ -189,6 +189,9 @@
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
 
+/* Whether <unwind.h> contains _Unwind_Backtrace */
+#undef HAVE_UNWIND_BACKTRACE
+
 /* Define to 1 if you have the <unwind.h> header file. */
 #undef HAVE_UNWIND_H
 
@@ -197,6 +200,9 @@
 
 /* define if your compiler has __attribute__ */
 #undef HAVE___ATTRIBUTE__
+
+/* define if your compiler supports alignment of functions */
+#undef HAVE___ATTRIBUTE__ALIGNED_FN
 
 /* Define to 1 if compiler supports __environ */
 #undef HAVE___ENVIRON
@@ -210,12 +216,8 @@
 /* Define to 1 if int32_t is equivalent to intptr_t */
 #undef INT32_EQUALS_INTPTR
 
-/* Define to the sub-directory in which libtool stores uninstalled libraries.
-   */
+/* Define to the sub-directory where libtool stores uninstalled libraries. */
 #undef LT_OBJDIR
-
-/* Define to 'volatile' if __malloc_hook is declared volatile */
-#undef MALLOC_HOOK_MAYBE_VOLATILE
 
 /* Name of package */
 #undef PACKAGE

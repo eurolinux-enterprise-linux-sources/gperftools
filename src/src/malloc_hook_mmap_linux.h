@@ -52,7 +52,11 @@
 
 // I test for 64-bit first so I don't have to do things like
 // '#if (defined(__mips__) && !defined(__MIPS64__))' as a mips32 check.
-#if defined(__x86_64__) || defined(__PPC64__) || defined(__aarch64__) || (defined(_MIPS_SIM) && _MIPS_SIM == _ABI64)
+#if defined(__x86_64__) \
+    || defined(__PPC64__) \
+    || defined(__aarch64__) \
+    || (defined(_MIPS_SIM) && (_MIPS_SIM == _ABI64 || _MIPS_SIM == _ABIN32)) \
+    || defined(__s390__)
 
 static inline void* do_mmap64(void *start, size_t length,
                               int prot, int flags,
@@ -105,7 +109,7 @@ static inline void* do_mmap64(void *start, size_t length,
     // Fall back to old 32-bit offset mmap() call
     // Old syscall interface cannot handle six args, so pass in an array
     int32 args[6] = { (int32) start, (int32) length, prot, flags, fd,
-                      (off_t) offset };
+                      (int32)(off_t) offset };
     result = (void *)syscall(SYS_mmap, args);
   }
 #else

@@ -4,11 +4,11 @@
 # make sure we're interpreted by some minimal autoconf
 AC_PREREQ([2.59])
 
-AC_INIT([gperftools],[2.4],[google-perftools@googlegroups.com])
+AC_INIT([gperftools],[2.6.1],[gperftools@googlegroups.com])
 # Update this value for every release!  (A:B:C will map to foo.so.(A-C).C.B)
 # http://www.gnu.org/software/libtool/manual/html_node/Updating-version-info.html
-TCMALLOC_SO_VERSION=6:6:2
-PROFILER_SO_VERSION=4:5:4
+TCMALLOC_SO_VERSION=8:5:4
+PROFILER_SO_VERSION=4:14:4
 
 AC_SUBST(TCMALLOC_SO_VERSION)
 AC_SUBST(PROFILER_SO_VERSION)
@@ -31,6 +31,8 @@ AC_SUBST(TC_VERSION_MINOR)
 AC_SUBST(TC_VERSION_PATCH)
 AC_SUBST(PACKAGE_STRING)
 
+AX_GENERATE_CHANGELOG
+
 # The user can choose not to compile in the heap-profiler, the
 # heap-checker, or the cpu-profiler.  There's also the possibility
 # for a 'fully minimal' compile, which leaves out the stacktrace
@@ -50,6 +52,13 @@ case "$host" in
    *-freebsd*) default_enable_heap_checker=no;;
    *-darwin*) default_enable_heap_checker=no;;
 esac
+
+# Currently only backtrace works on s390.
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM(, [return __s390__])],
+                  [default_enable_libunwind=no
+                   default_enable_backtrace=yes],
+                  [default_enable_libunwind=yes
+                   default_enable_backtrace=no])
 
 # Disable libunwind linking on ppc64 by default.
 AC_COMPILE_IFELSE([AC_LANG_PROGRAM(, [return __PPC64__])],
@@ -92,7 +101,7 @@ AC_ARG_ENABLE([stacktrace-via-backtrace],
               [AS_HELP_STRING([--enable-stacktrace-via-backtrace],
                               [enable use of backtrace() for stacktrace capturing (may deadlock)])],
               [enable_backtrace=yes],
-              [])
+              [enable_backtrace="$default_enable_backtrace"])
 AC_ARG_ENABLE([libunwind],
               [AS_HELP_STRING([--enable-libunwind],
                               [enable libunwind linking])],
@@ -156,6 +165,22 @@ AC_PROG_LIBTOOL
 AC_C_INLINE
 AX_C___ATTRIBUTE__
 
+AC_MSG_CHECKING(for __attribute__((aligned(N))) on functions)
+AC_CACHE_VAL(ac_cv___attribute__aligned_fn, [
+  AC_TRY_COMPILE(
+    [#include <stdlib.h>
+     void foo(void) __attribute__((aligned(128)));
+     void foo(void) { exit(1); }],
+    [],
+    ac_cv___attribute__aligned_fn=yes,
+    ac_cv___attribute__aligned_fn=no
+  )])
+if test "$ac_cv___attribute__aligned_fn" = "yes"; then
+  AC_DEFINE(HAVE___ATTRIBUTE__ALIGNED_FN, 1, [define if your compiler supports alignment of functions])
+fi
+AC_MSG_RESULT($ac_cv___attribute__aligned_fn)
+
+
 # Check whether some low-level functions/files are available
 AC_HEADER_STDC
 
@@ -168,8 +193,6 @@ AC_CHECK_FUNCS(geteuid)         # for turning off services when run as root
 AC_CHECK_FUNCS(fork)            # for the pthread_atfork setup
 AC_CHECK_HEADERS(features.h)    # for vdso_support.h
 AC_CHECK_HEADERS(malloc.h)      # some systems define stuff there, others not
-AC_CHECK_HEADERS(sys/malloc.h)  # where some versions of OS X put malloc.h
-AC_CHECK_HEADERS(malloc/malloc.h)  # another place OS X puts malloc.h (?)
 AC_CHECK_HEADERS(glob.h)        # for heap-profile-table (cleaning up profiles)
 AC_CHECK_HEADERS(execinfo.h)    # for stacktrace? and heapchecker_unittest
 AC_CHECK_HEADERS(unwind.h)      # for stacktrace
@@ -255,16 +278,14 @@ fi
 # Some tests test the behavior of .so files, and only make sense for dynamic.
 AM_CONDITIONAL(ENABLE_STATIC, test "$enable_static" = yes)
 
-# We want to link in libunwind or libexecinfo if it it is enabled and exists.
+# We want to link in libunwind if it is enabled and exists.
+UNWIND_LIBS=
 if test "$enable_libunwind" = yes; then
-  AC_CHECK_HEADERS(libunwind.h)   # for stacktrace
-  AC_CHECK_LIB(unwind, backtrace, UNWIND_LIBS=-lunwind,
-               [AC_CHECK_LIB(execinfo, backtrace, UNWIND_LIBS=-lexecinfo, UNWIND_LIBS=)])
-  AC_SUBST(UNWIND_LIBS)
-else
-  AC_CHECK_LIB(execinfo, backtrace, UNWIND_LIBS=-lexecinfo, UNWIND_LIBS=)
-  AC_SUBST(UNWIND_LIBS)
+  AC_CHECK_HEADERS([libunwind.h],
+                   [AC_CHECK_LIB(unwind, backtrace, UNWIND_LIBS=-lunwind)
+                    will_use_libunwind=yes])
 fi
+AC_SUBST(UNWIND_LIBS)
 
 # On x86_64, instead of libunwind, we can choose to compile with frame-pointers.
 AC_ARG_ENABLE(frame_pointers,
@@ -306,17 +327,88 @@ AM_CONDITIONAL(I386, test "$is_i386" = yes)
 AC_CACHE_CHECK([if the compiler supports -Wno-unused-result],
                perftools_cv_w_no_unused_result,
 	       [OLD_CFLAGS="$CFLAGS"
-	        CFLAGS="$CFLAGS -Wno-error -Wno-unused-result"
+	        CFLAGS="$CFLAGS -Wno-error -Wunused-result"
 		# gcc doesn't warn about unknown flags unless it's
 		# also warning for some other purpose, hence the
 		# divide-by-0.  (We use -Wno-error to make sure the
 		# divide-by-0 doesn't cause this test to fail!)
+                #
+                # Also gcc is giving only warning for unknown flags of
+                # -Wno-XXX form. So in order to detect support we're
+                # using -Wunused-result which will cause gcc to give
+                # error which we can detect.
 	        AC_COMPILE_IFELSE([AC_LANG_PROGRAM(, return 1/0)],
 	                          perftools_cv_w_no_unused_result=yes,
                                   perftools_cv_w_no_unused_result=no)
 	        CFLAGS="$OLD_CFLAGS"])
 AM_CONDITIONAL(HAVE_W_NO_UNUSED_RESULT,
 	       test "$perftools_cv_w_no_unused_result" = yes)
+
+AC_ARG_ENABLE([dynamic-sized-delete-support],
+              [AS_HELP_STRING([--enable-dynamic-sized-delete-support],
+                [try to build run-time switch for sized delete operator])],
+              [enable_dyn_sized_delete="$enableval"],
+              [enable_dyn_sized_delete=no])
+
+AS_IF([test "x$enable_dyn_sized_delete" = xyes],
+      [AC_DEFINE([ENABLE_DYNAMIC_SIZED_DELETE], 1,
+                 [Build runtime detection for sized delete])])
+
+AC_ARG_ENABLE([sized-delete],
+              [AS_HELP_STRING([--enable-sized-delete],
+                              [build sized delete operator])],
+              [enable_sized_delete="$enableval"],
+              [enable_sized_delete="no"])
+AS_IF([test "x$enable_sized_delete" = xyes],
+        [AC_DEFINE([ENABLE_SIZED_DELETE], 1, [Build sized deletion operators])
+         AC_MSG_NOTICE([Will build sized deallocation operators])],
+      [AS_IF([test "x$enable_dyn_sized_delete" = xyes],
+             [AC_MSG_NOTICE([Will build dynamically detected sized deallocation operators])],
+             [AC_MSG_NOTICE([Will not build sized deallocation operators])])])
+
+AC_CACHE_CHECK([if C++ compiler supports -fsized-deallocation],
+               [perftools_cv_sized_deallocation_result],
+               [AC_LANG_PUSH(C++)
+                OLD_CXXFLAGS="$CXXFLAGS"
+                CXXFLAGS="$CXXFLAGS -fsized-deallocation"
+                AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
+                    [[#include <new>]],
+                    [[(::operator delete)(0, 256)]])],
+                 perftools_cv_sized_deallocation_result=yes,
+                 perftools_cv_sized_deallocation_result=no)
+                CXXFLAGS="$OLD_CXXFLAGS"
+                AC_LANG_POP(C++)])
+
+AM_CONDITIONAL(HAVE_SIZED_DEALLOCATION,
+               test "$perftools_cv_sized_deallocation_result" = yes)
+
+AC_CACHE_CHECK([if target has _Unwind_Backtrace],
+               [perftools_cv_have_unwind_backtrace],
+               [AC_LANG_PUSH(C++)
+                AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
+                    [[#include <unwind.h>]],
+                    [[&_Unwind_Backtrace]])],
+                 [perftools_cv_have_unwind_backtrace=yes],
+                 [perftools_cv_have_unwind_backtrace=no])
+                AC_LANG_POP(C++)])
+AS_IF([test "x$perftools_cv_have_unwind_backtrace" = xyes],
+      [AC_DEFINE(HAVE_UNWIND_BACKTRACE, 1, [Whether <unwind.h> contains _Unwind_Backtrace])])
+
+AS_IF([test "x$enable_backtrace" = xyes],
+      [default_emergency_malloc=yes],
+      [default_emergency_malloc=no])
+
+AS_IF([test "x$will_use_libunwind" = xyes],
+      [AC_COMPILE_IFELSE([AC_LANG_PROGRAM(, [return __arm__])],
+                         [default_emergency_malloc=yes])])
+
+AC_ARG_ENABLE([emergency-malloc],
+              [AS_HELP_STRING([--enable-emergency-malloc],
+                              [build emergency malloc feature])],
+              [enable_emergency_malloc="$enableval"],
+              [enable_emergency_malloc="$default_emergency_malloc"])
+
+AM_CONDITIONAL(BUILD_EMERGENCY_MALLOC, [test "x$enable_emergency_malloc" = xyes])
 
 # Defines PRIuS
 AC_COMPILER_CHARACTERISTICS
@@ -378,16 +470,6 @@ AC_LINK_IFELSE([AC_LANG_PROGRAM([#if defined(__GNUC__) && ((__GNUC__ < 4) || (__
                           Define to 1 if compiler supports __thread)
                 AC_MSG_RESULT([yes])],
                [AC_MSG_RESULT([no])])
-
-# glibc's __malloc_hook/etc were declared volatile starting in glibc 2.14
-AC_MSG_CHECKING([if __malloc_hook is declared volatile])
-AC_COMPILE_IFELSE([AC_LANG_PROGRAM([#include <malloc.h>
-void* (* volatile __malloc_hook)(size_t, const void*) = 0;],)],
-                  [AC_DEFINE(MALLOC_HOOK_MAYBE_VOLATILE, volatile,
-                             Define to 'volatile' if __malloc_hook is declared volatile)
-                   AC_MSG_RESULT([yes])],
-                  [AC_DEFINE(MALLOC_HOOK_MAYBE_VOLATILE, )
-                   AC_MSG_RESULT([no])])
 
 # Nanosleep requires extra libraries on some architectures (solaris).
 # This sets NANOSLEEP_LIBS.  nanosleep doesn't exist on mingw, which
@@ -451,6 +533,11 @@ esac
 
 if test "x$enable_backtrace" = xyes; then
   AC_CHECK_DECLS([backtrace], [], [], [#include <execinfo.h>])
+  save_LIBS=$LIBS
+  LIBS=$UNWIND_LIBS
+  AC_SEARCH_LIBS([backtrace], [execinfo])
+  UNWIND_LIBS=$LIBS
+  LIBS=$save_LIBS
 fi
 
 # For windows, this has a non-trivial value (__declspec(export)), but any
@@ -533,6 +620,8 @@ AC_CONFIG_FILES([Makefile
 AC_OUTPUT
 
 AS_IF([test "$x86_no_fp_by_default" = yes && test "x$enable_frame_pointers" != xyes && test "x$UNWIND_LIBS" = x && test "x$enable_minimal" != xyes],
-      [AS_IF([test "x$enable_backtrace" = xyes],
-             [AC_MSG_WARN([No frame pointers and no libunwind. Expect backtrace capturing and unittests to fail])],
-             [AC_MSG_FAILURE([No frame pointers and no libunwind. The compilation will fail])])])
+  [AS_IF([test "x$perftools_cv_have_unwind_backtrace" = xyes],
+    [AC_MSG_WARN([No frame pointers and no libunwind. Using experimental backtrace capturing via libgcc. Expect crashy cpu profiler.])],
+    [AS_IF([test "x$enable_backtrace" = xyes],
+      [AC_MSG_WARN([No frame pointers and no libunwind.  Using experimental backtrace(). Expect crashy cpu profiler.])],
+      [AC_MSG_FAILURE([No frame pointers and no libunwind. The compilation will fail])])])])

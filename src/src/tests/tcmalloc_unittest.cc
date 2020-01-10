@@ -91,6 +91,7 @@
 #include "base/simple_mutex.h"
 #include "gperftools/malloc_hook.h"
 #include "gperftools/malloc_extension.h"
+#include "gperftools/nallocx.h"
 #include "gperftools/tcmalloc.h"
 #include "thread_cache.h"
 #include "system-alloc.h"
@@ -626,7 +627,7 @@ static void TestRealloc() {
 #endif
 }
 
-static void TestNewHandler() throw (std::bad_alloc) {
+static void TestNewHandler() PERFTOOLS_THROW(std::bad_alloc) {
   ++news_handled;
   throw std::bad_alloc();
 }
@@ -725,9 +726,9 @@ static void TestNothrowNew(void* (*func)(size_t, const std::nothrow_t&)) {
 // that we used the tcmalloc version of the call, and not the libc.
 // Note the ... in the hook signature: we don't care what arguments
 // the hook takes.
-#define MAKE_HOOK_CALLBACK(hook_type)                                   \
+#define MAKE_HOOK_CALLBACK(hook_type, ...)                              \
   static volatile int g_##hook_type##_calls = 0;                                 \
-  static void IncrementCallsTo##hook_type(...) {                        \
+  static void IncrementCallsTo##hook_type(__VA_ARGS__) {                \
     g_##hook_type##_calls++;                                            \
   }                                                                     \
   static void Verify##hook_type##WasCalled() {                          \
@@ -744,12 +745,14 @@ static void TestNothrowNew(void* (*func)(size_t, const std::nothrow_t&)) {
   }
 
 // We do one for each hook typedef in malloc_hook.h
-MAKE_HOOK_CALLBACK(NewHook);
-MAKE_HOOK_CALLBACK(DeleteHook);
-MAKE_HOOK_CALLBACK(MmapHook);
-MAKE_HOOK_CALLBACK(MremapHook);
-MAKE_HOOK_CALLBACK(MunmapHook);
-MAKE_HOOK_CALLBACK(SbrkHook);
+MAKE_HOOK_CALLBACK(NewHook, const void*, size_t);
+MAKE_HOOK_CALLBACK(DeleteHook, const void*);
+MAKE_HOOK_CALLBACK(MmapHook, const void*, const void*, size_t, int, int, int,
+                   off_t);
+MAKE_HOOK_CALLBACK(MremapHook, const void*, const void*, size_t, size_t, int,
+                   const void*);
+MAKE_HOOK_CALLBACK(MunmapHook, const void *, size_t);
+MAKE_HOOK_CALLBACK(SbrkHook, const void *, ptrdiff_t);
 
 static void TestAlignmentForSize(int size) {
   fprintf(LOGSTREAM, "Testing alignment of malloc(%d)\n", size);
@@ -1047,6 +1050,65 @@ static void TestSetNewMode() {
   tc_set_new_mode(old_mode);
 }
 
+static void TestErrno(void) {
+  void* ret;
+  if (kOSSupportsMemalign) {
+    errno = 0;
+    ret = Memalign(128, kTooBig);
+    EXPECT_EQ(NULL, ret);
+    EXPECT_EQ(ENOMEM, errno);
+  }
+
+  errno = 0;
+  ret = malloc(kTooBig);
+  EXPECT_EQ(NULL, ret);
+  EXPECT_EQ(ENOMEM, errno);
+
+  errno = 0;
+  ret = tc_malloc_skip_new_handler(kTooBig);
+  EXPECT_EQ(NULL, ret);
+  EXPECT_EQ(ENOMEM, errno);
+}
+
+
+#ifndef DEBUGALLOCATION
+// Ensure that nallocx works before main.
+struct GlobalNallocx {
+  GlobalNallocx() { CHECK_GT(nallocx(99, 0), 99); }
+} global_nallocx;
+
+#if defined(__GNUC__)
+
+static void check_global_nallocx() __attribute__((constructor));
+static void check_global_nallocx() { CHECK_GT(nallocx(99, 0), 99); }
+
+#endif // __GNUC__
+
+static void TestNAllocX() {
+  for (size_t size = 0; size <= (1 << 20); size += 7) {
+    size_t rounded = nallocx(size, 0);
+    ASSERT_GE(rounded, size);
+    void* ptr = malloc(size);
+    ASSERT_EQ(rounded, MallocExtension::instance()->GetAllocatedSize(ptr));
+    free(ptr);
+  }
+}
+
+static void TestNAllocXAlignment() {
+  for (size_t size = 0; size <= (1 << 20); size += 7) {
+    for (size_t align = 0; align < 10; align++) {
+      size_t rounded = nallocx(size, MALLOCX_LG_ALIGN(align));
+      ASSERT_GE(rounded, size);
+      ASSERT_EQ(rounded % (1 << align), 0);
+      void* ptr = tc_memalign(1 << align, size);
+      ASSERT_EQ(rounded, MallocExtension::instance()->GetAllocatedSize(ptr));
+      free(ptr);
+    }
+  }
+}
+
+#endif // !DEBUGALLOCATION
+
 static int RunAllTests(int argc, char** argv) {
   // Optional argv[1] is the seed
   AllocatorState rnd(argc > 1 ? atoi(argv[1]) : 100);
@@ -1262,9 +1324,9 @@ static int RunAllTests(int argc, char** argv) {
     VerifyMunmapHookWasCalled();
     close(fd);
 #else   // this is just to quiet the compiler: make sure all fns are called
-    IncrementCallsToMmapHook();
-    IncrementCallsToMunmapHook();
-    IncrementCallsToMremapHook();
+    IncrementCallsToMmapHook(NULL, NULL, 0, 0, 0, 0, 0);
+    IncrementCallsToMunmapHook(NULL, 0);
+    IncrementCallsToMremapHook(NULL, NULL, 0, 0, 0, NULL);
     VerifyMmapHookWasCalled();
     VerifyMremapHookWasCalled();
     VerifyMunmapHookWasCalled();
@@ -1285,7 +1347,7 @@ static int RunAllTests(int argc, char** argv) {
     CHECK(p1 != NULL);
     CHECK_EQ(g_SbrkHook_calls, 0);
 #else   // this is just to quiet the compiler: make sure all fns are called
-    IncrementCallsToSbrkHook();
+    IncrementCallsToSbrkHook(NULL, 0);
     VerifySbrkHookWasCalled();
 #endif
 
@@ -1379,6 +1441,13 @@ static int RunAllTests(int argc, char** argv) {
   TestReleaseToSystem();
   TestAggressiveDecommit();
   TestSetNewMode();
+  TestErrno();
+
+// GetAllocatedSize under DEBUGALLOCATION returns the size that we asked for.
+#ifndef DEBUGALLOCATION
+  TestNAllocX();
+  TestNAllocXAlignment();
+#endif
 
   return 0;
 }
